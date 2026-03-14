@@ -26,6 +26,19 @@
     input[type=number] {
       -moz-appearance: textfield;
     }
+    
+    /* 隱私遮蔽模式的模糊效果 */
+    .privacy-blur {
+      filter: blur(6px);
+      opacity: 0.7;
+      transition: filter 0.3s ease, opacity 0.3s ease;
+      user-select: none;
+    }
+    /* 點擊輸入框時解除模糊以便編輯 */
+    .privacy-blur:focus, .privacy-blur:active {
+      filter: blur(0px);
+      opacity: 1;
+    }
   </style>
 </head>
 <body>
@@ -34,7 +47,7 @@
   <script type="text/babel">
     const { useState, useMemo, useEffect, useRef } = React;
 
-    // --- 圖示對映元件 (替代 Lucide 確保單檔運行) ---
+    // --- 圖示對映元件 ---
     const Icon = ({ name, size = 20, className = '' }) => {
       const faMap = {
         'Wallet': 'fa-solid fa-wallet',
@@ -42,9 +55,7 @@
         'Banknote': 'fa-solid fa-money-bill-wave',
         'PieChart': 'fa-solid fa-chart-pie',
         'ArrowRightLeft': 'fa-solid fa-right-left',
-        'ShieldCheck': 'fa-solid fa-shield-halved',
         'Bike': 'fa-solid fa-motorcycle',
-        'CircleDollarSign': 'fa-solid fa-circle-dollar-to-slot',
         'ClipboardCheck': 'fa-solid fa-clipboard-check',
         'Plus': 'fa-solid fa-plus',
         'Trash2': 'fa-solid fa-trash-can',
@@ -60,7 +71,11 @@
         'ChevronDown': 'fa-solid fa-chevron-down',
         'ChevronUp': 'fa-solid fa-chevron-up',
         'CreditCard': 'fa-solid fa-credit-card',
-        'Activity': 'fa-solid fa-chart-line'
+        'Activity': 'fa-solid fa-chart-line',
+        'Eye': 'fa-solid fa-eye',
+        'EyeOff': 'fa-solid fa-eye-slash',
+        'Target': 'fa-solid fa-bullseye',
+        'FileExport': 'fa-solid fa-file-export'
       };
       return <i className={`${faMap[name]} ${className}`} style={{ fontSize: size }}></i>;
     };
@@ -110,12 +125,13 @@
       ]);
 
       const [usdRate, setUsdRate] = useState(32.5);
-      const [reservePercent, setReservePercent] = useState(20);
+      const [financialGoal, setFinancialGoal] = useState(5000000); // 預設財務目標 500 萬
       const [paidRecords, setPaidRecords] = useState({});
       const [historyData, setHistoryData] = useState([]);
 
       // --- UI 控制狀態 ---
       const [isDarkMode, setIsDarkMode] = useState(false);
+      const [isPrivacyMode, setIsPrivacyMode] = useState(false); // 隱私遮蔽模式
       const [sectionsCollapsed, setSectionsCollapsed] = useState({
         banks: false, vehicles: true, stocks: false, liabilities: false, expenses: false
       });
@@ -132,8 +148,10 @@
       useEffect(() => {
         const savedUrl = localStorage.getItem('wealthTrackerSyncUrl') || defaultSyncUrl;
         const savedMode = localStorage.getItem('wealthTrackerDarkMode') === 'true';
+        const savedPrivacy = localStorage.getItem('wealthTrackerPrivacyMode') === 'true';
         setSyncUrl(savedUrl);
         setIsDarkMode(savedMode);
+        setIsPrivacyMode(savedPrivacy);
         
         if (savedUrl) loadFromCloud(savedUrl, true);
         else setIsInitialLoading(false);
@@ -150,18 +168,26 @@
         }, 2500);
 
         return () => clearTimeout(autoSaveTimer);
-      }, [assets, liabilities, fixedExpenses, usdRate, reservePercent, paidRecords]);
+      }, [assets, liabilities, fixedExpenses, usdRate, paidRecords, financialGoal]);
 
+      // --- 本地狀態切換 ---
       const toggleDarkMode = () => {
         const newMode = !isDarkMode;
         setIsDarkMode(newMode);
         localStorage.setItem('wealthTrackerDarkMode', newMode);
       };
 
+      const togglePrivacyMode = () => {
+        const newMode = !isPrivacyMode;
+        setIsPrivacyMode(newMode);
+        localStorage.setItem('wealthTrackerPrivacyMode', newMode);
+      };
+
       const toggleSection = (key) => {
         setSectionsCollapsed(prev => ({ ...prev, [key]: !prev[key] }));
       };
 
+      // --- 雲端操作 ---
       const loadFromCloud = async (url = syncUrl, isInitial = false) => {
         if (!url) { if (isInitial) setIsInitialLoading(false); return; }
         if (!isInitial) setSyncState({ status: 'loading', message: '正在同步最新資料...' });
@@ -171,25 +197,13 @@
           const res = await fetch(fetchUrl, { redirect: 'follow', cache: 'no-store' });
           const text = await res.text(); 
           let data;
-          try { data = JSON.parse(text); } 
-          catch (e) { throw new Error('資料格式異常'); }
+          try { data = JSON.parse(text); } catch (e) { throw new Error('資料格式異常'); }
           
           if (data && data.assets) {
-            if (data.assets.stocks) {
-              data.assets.stocks = data.assets.stocks.map(stock => {
-                if (stock.amount === undefined && stock.shares !== undefined && stock.price !== undefined) {
-                  return { ...stock, amount: stock.shares * stock.price };
-                }
-                return stock;
-              });
-              if (!data.assets.stocks.some(s => s.id === 'pending_settlement')) {
-                data.assets.stocks.push({ id: 'pending_settlement', name: '待交割款 (負數為扣款)', amount: 0 });
-              }
-            }
             setAssets(data.assets);
             if (data.liabilities) setLiabilities(data.liabilities);
             if (data.usdRate) setUsdRate(data.usdRate);
-            if (data.reservePercent) setReservePercent(data.reservePercent);
+            if (data.financialGoal) setFinancialGoal(data.financialGoal);
             if (data.fixedExpenses) setFixedExpenses(data.fixedExpenses);
             if (data.paidRecords) setPaidRecords(data.paidRecords);
             if (data.history) setHistoryData(data.history); 
@@ -204,22 +218,6 @@
         }
       };
 
-      const getNum = (val) => {
-        if (val === '' || val === null || val === undefined) return 0;
-        if (typeof val === 'number') return val;
-        const strVal = String(val).trim();
-        try {
-          const sanitized = strVal.replace(/[^-()\d/*+.]/g, '');
-          if (!sanitized) return 0;
-          const safeEvalStr = sanitized.replace(/[+\-*/.]+$/, '');
-          if (!safeEvalStr) return 0;
-          const result = new Function(`return ${safeEvalStr}`)();
-          return isNaN(result) || !isFinite(result) ? 0 : result;
-        } catch (e) {
-          return parseFloat(strVal) || 0;
-        }
-      };
-      
       const saveToCloud = async (isAutoSave = false) => {
         if (!syncUrl) return;
         localStorage.setItem('wealthTrackerSyncUrl', syncUrl);
@@ -227,15 +225,11 @@
         if (!isAutoSave) setSyncState({ status: 'loading', message: '手動強制儲存中...' });
         else setSyncState({ status: 'loading', message: '自動儲存中...' });
 
-        const bankTotal = assets.banks.reduce((sum, item) => sum + getNum(item.amount), 0);
-        const stockTwdTotal = assets.stocks.reduce((sum, item) => sum + getNum(item.amount), 0);
-        const foreignTwdTotal = assets.foreign.reduce((sum, item) => sum + (item.currency === 'USD' ? getNum(item.amount) * getNum(usdRate) : getNum(item.amount)), 0);
-        const vehicleTotal = assets.vehicles.reduce((sum, item) => sum + getNum(item.amount), 0);
-        const liabilityTotal = liabilities.reduce((sum, item) => sum + getNum(item.amount), 0);
-        const currentNetWorth = bankTotal + stockTwdTotal + foreignTwdTotal + vehicleTotal - liabilityTotal;
+        // 計算當下淨值供後端歷史紀錄使用
+        const currentNetWorth = totals.grandTotal;
 
         const payload = {
-          assets, liabilities, usdRate, reservePercent, fixedExpenses, paidRecords, currentNetWorth,
+          assets, liabilities, usdRate, financialGoal, fixedExpenses, paidRecords, currentNetWorth,
           lastUpdated: new Date().toISOString()
         };
 
@@ -252,6 +246,35 @@
         setTimeout(() => setSyncState(prev => prev.status === 'error' ? prev : { status: 'idle', message: '' }), 2500);
       };
 
+      // --- 本地備份匯出 ---
+      const handleExportData = () => {
+        const dataStr = JSON.stringify({ assets, liabilities, fixedExpenses, paidRecords, usdRate, financialGoal }, null, 2);
+        const blob = new Blob([dataStr], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `財富備份_${new Date().toISOString().slice(0,10)}.json`;
+        a.click();
+      };
+
+      // --- 數學算式輔助函數 ---
+      const getNum = (val) => {
+        if (val === '' || val === null || val === undefined) return 0;
+        if (typeof val === 'number') return val;
+        const strVal = String(val).trim();
+        try {
+          const sanitized = strVal.replace(/[^-()\d/*+.]/g, '');
+          if (!sanitized) return 0;
+          const safeEvalStr = sanitized.replace(/[+\-*/.]+$/, '');
+          if (!safeEvalStr) return 0;
+          const result = new Function(`return ${safeEvalStr}`)();
+          return isNaN(result) || !isFinite(result) ? 0 : result;
+        } catch (e) {
+          return parseFloat(strVal) || 0;
+        }
+      };
+
+      // --- 計算邏輯 ---
       const totals = useMemo(() => {
         const bankTotal = assets.banks.reduce((sum, item) => sum + getNum(item.amount), 0);
         const stockTwdTotal = assets.stocks.reduce((sum, item) => sum + getNum(item.amount), 0);
@@ -262,15 +285,23 @@
         const investmentTotal = stockTwdTotal + foreignTwdTotal;
         const totalAssets = bankTotal + investmentTotal + vehicleTotal;
         const grandTotal = totalAssets - liabilityTotal; 
-        
-        const reserveAmount = (grandTotal * getNum(reservePercent)) / 100;
-        const controllableAmount = grandTotal - reserveAmount;
 
-        return { bankTotal, stockTotal: investmentTotal, vehicleTotal, liabilityTotal, totalAssets, grandTotal, reserveAmount, controllableAmount };
-      }, [assets, liabilities, usdRate, reservePercent]);
+        // 資產配置比例
+        const assetSum = totalAssets > 0 ? totalAssets : 1; 
+        const alloc = {
+          bank: (bankTotal / assetSum) * 100,
+          stock: (investmentTotal / assetSum) * 100,
+          vehicle: (vehicleTotal / assetSum) * 100
+        };
 
+        return { bankTotal, stockTotal: investmentTotal, vehicleTotal, liabilityTotal, totalAssets, grandTotal, alloc };
+      }, [assets, liabilities, usdRate]);
+
+      // --- 格式化顯示 (支援隱私模式) ---
       const formatCurrency = (num) => new Intl.NumberFormat('zh-TW', { style: 'currency', currency: 'TWD', maximumFractionDigits: 0 }).format(num);
-      
+      const displayValue = (val) => isPrivacyMode ? '$***,***' : formatCurrency(val);
+
+      // --- 資料操作邏輯 (動態新增刪除) ---
       const handleDataChange = (category, id, field, value) => {
         if (category === 'liabilities') {
           setLiabilities(prev => prev.map(item => item.id === id ? { ...item, [field]: value } : item));
@@ -286,22 +317,41 @@
         if (value === '' || value === null || value === undefined) return;
         const strVal = String(value);
         if (!/[+\-*/()]/.test(strVal)) return; 
-        
-        const evaluated = getNum(strVal);
-        handleDataChange(category, id, field, evaluated);
+        handleDataChange(category, id, field, getNum(strVal));
+      };
+
+      const handleAddAsset = (category, defaultName = '新項目') => {
+        const newId = `${category}_${Date.now()}`;
+        if (category === 'liabilities') {
+          setLiabilities(prev => [...prev, { id: newId, name: defaultName, amount: 0 }]);
+        } else {
+          setAssets(prev => ({
+            ...prev,
+            [category]: [...prev[category], { id: newId, name: defaultName, amount: 0 }]
+          }));
+        }
+      };
+
+      const handleRemoveAsset = (category, id) => {
+        if (category === 'liabilities') {
+          setLiabilities(prev => prev.filter(item => item.id !== id));
+        } else {
+          setAssets(prev => ({
+            ...prev,
+            [category]: prev[category].filter(item => item.id !== id)
+          }));
+        }
       };
 
       const currentCashHand = assets.banks.find(b => b.id === 'cash_hand')?.amount ?? '';
 
+      // --- 核銷相關與連動扣款 ---
       const recentMonths = useMemo(() => {
         const result = [];
         const d = new Date();
         for (let i = 5; i >= 0; i--) {
           const monthDate = new Date(d.getFullYear(), d.getMonth() - i, 1);
-          result.push({
-            id: `${monthDate.getFullYear()}-${monthDate.getMonth() + 1}`,
-            label: `${monthDate.getMonth() + 1}月`
-          });
+          result.push({ id: `${monthDate.getFullYear()}-${monthDate.getMonth() + 1}`, label: `${monthDate.getMonth() + 1}月` });
         }
         return result;
       }, []);
@@ -315,17 +365,30 @@
         if (val === '' || val === null || val === undefined) return;
         const strVal = String(val);
         if (!/[+\-*/()]/.test(strVal)) return;
-        const evaluated = getNum(strVal);
-        handleExpenseChange(id, field, evaluated);
+        handleExpenseChange(id, field, getNum(strVal));
       };
 
       const handleAddExpense = () => {
-        const newId = `exp_${Date.now()}`;
-        setFixedExpenses(prev => [...prev, { id: newId, name: '新支出項目', amount: 0, note: '每月' }]);
+        setFixedExpenses(prev => [...prev, { id: `exp_${Date.now()}`, name: '新支出項目', amount: 0, note: '每月' }]);
       };
+      
       const handleRemoveExpense = (id) => setFixedExpenses(prev => prev.filter(e => e.id !== id));
+      
+      // 連動扣款核心邏輯
       const togglePaid = (expenseId, monthId) => {
         const key = `${expenseId}_${monthId}`;
+        const isPaid = paidRecords[key];
+        const expense = fixedExpenses.find(e => e.id === expenseId);
+        
+        // 如果是「從未繳勾選為已繳」且有設定金額
+        if (!isPaid && expense && getNum(expense.amount) > 0) {
+          const deductAmount = getNum(expense.amount);
+          // 詢問是否自動從現金扣除
+          if (window.confirm(`是否自動從「手頭現金」扣除此筆費用 ${formatCurrency(deductAmount)}？`)) {
+            const currentCash = getNum(assets.banks.find(b => b.id === 'cash_hand')?.amount);
+            handleDataChange('banks', 'cash_hand', 'amount', currentCash - deductAmount);
+          }
+        }
         setPaidRecords(prev => ({ ...prev, [key]: !prev[key] }));
       };
 
@@ -363,16 +426,19 @@
                 <h1 className="text-3xl font-bold flex items-center gap-2">
                   <Icon name="PieChart" className="text-indigo-500" /> 財富管理儀表板 Pro
                 </h1>
-                <p className={`${theme.textMuted} mt-1 text-sm`}>Auto-Save 開啟中 | 支援輸入算式加減乘除</p>
+                <p className={`${theme.textMuted} mt-1 text-sm`}>Auto-Save 開啟中 | 支援算式與連動扣款</p>
               </div>
               <div className="flex flex-wrap items-center gap-3">
-                <button 
-                  onClick={toggleDarkMode}
-                  className={`p-3 rounded-xl shadow-sm border ${theme.card} hover:opacity-80 transition-opacity`}
-                  title="切換深色模式"
-                >
+                <button onClick={togglePrivacyMode} className={`p-3 rounded-xl shadow-sm border ${theme.card} hover:opacity-80 transition-opacity text-slate-500`} title="隱私遮蔽模式">
+                  {isPrivacyMode ? <Icon name="EyeOff" size={20}/> : <Icon name="Eye" size={20}/>}
+                </button>
+                <button onClick={handleExportData} className={`p-3 rounded-xl shadow-sm border ${theme.card} hover:opacity-80 transition-opacity text-slate-500`} title="匯出本地備份">
+                  <Icon name="FileExport" size={20}/>
+                </button>
+                <button onClick={toggleDarkMode} className={`p-3 rounded-xl shadow-sm border ${theme.card} hover:opacity-80 transition-opacity`} title="切換深色模式">
                   {isDarkMode ? <Icon name="Sun" className="text-amber-400" size={20}/> : <Icon name="Moon" className="text-indigo-600" size={20}/>}
                 </button>
+                
                 <div className={`p-2 rounded-xl shadow-sm border ${theme.card} flex flex-wrap items-center gap-2 md:gap-4`}>
                   <div className="flex items-center gap-1.5 px-2 border-r border-slate-200 pr-4">
                     <Icon name="Banknote" size={18} className="text-emerald-500" />
@@ -382,7 +448,7 @@
                       value={currentCashHand} 
                       onChange={(e) => handleDataChange('banks', 'cash_hand', 'amount', e.target.value)}
                       onBlur={(e) => handleBlurEval('banks', 'cash_hand', 'amount', e.target.value)}
-                      className={`w-24 ${theme.inputBg} border-none rounded px-2 py-1 text-sm font-bold focus:ring-2 focus:ring-emerald-500 text-emerald-600 placeholder-emerald-200 outline-none`}
+                      className={`w-24 ${theme.inputBg} border-none rounded px-2 py-1 text-sm font-bold focus:ring-2 focus:ring-emerald-500 text-emerald-600 placeholder-emerald-200 outline-none ${isPrivacyMode ? 'privacy-blur' : ''}`}
                       placeholder="可輸入算式"
                     />
                   </div>
@@ -393,10 +459,8 @@
                       type="text" 
                       value={usdRate ?? ''} 
                       onChange={(e) => setUsdRate(e.target.value)}
-                      onBlur={(e) => {
-                        if (/[+\-*/()]/.test(String(e.target.value))) setUsdRate(getNum(e.target.value));
-                      }}
-                      className={`w-20 ${theme.inputBg} border-none rounded px-2 py-1 text-sm font-bold focus:ring-2 focus:ring-indigo-500 ${theme.text} outline-none`}
+                      onBlur={(e) => { if (/[+\-*/()]/.test(String(e.target.value))) setUsdRate(getNum(e.target.value)); }}
+                      className={`w-16 ${theme.inputBg} border-none rounded px-2 py-1 text-sm font-bold focus:ring-2 focus:ring-indigo-500 ${theme.text} outline-none`}
                     />
                   </div>
                 </div>
@@ -418,66 +482,74 @@
               )}
             </div>
 
-            {/* 淨值趨勢圖 */}
-            {historyData.length > 0 && (
-              <div className={`${theme.card} rounded-2xl p-6 mb-8 shadow-sm border`}>
-                <div className="flex items-center gap-2 mb-4">
-                  <Icon name="Activity" className="text-indigo-500" size={20} />
-                  <h2 className="font-bold">資產淨值成長趨勢 (由雲端自動紀錄)</h2>
-                </div>
-                <div className="flex items-end gap-2 h-32 mt-4">
-                  {historyData.map((data, idx) => {
-                    const max = Math.max(...historyData.map(d => d.netWorth));
-                    const height = max === 0 ? 0 : (data.netWorth / max) * 100;
-                    return (
-                      <div key={idx} className="flex-1 flex flex-col items-center justify-end gap-2 group relative">
-                        <div className="opacity-0 group-hover:opacity-100 transition-opacity text-[10px] bg-slate-800 text-white px-2 py-1 rounded absolute -top-8 pointer-events-none whitespace-nowrap z-10">
-                          {formatCurrency(data.netWorth)}
-                        </div>
-                        <div className="w-full bg-indigo-500 rounded-t-sm transition-all duration-500 hover:bg-indigo-400" style={{ height: `${height}%`, minHeight: '4px' }}></div>
-                        <span className={`text-[10px] ${theme.textMuted}`}>{data.month}</span>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
+            {/* 淨值與目標大看板 */}
+            <div className="grid grid-cols-1 lg:grid-cols-5 gap-6 mb-8">
+              
+              {/* 總資產與配置圓餅圖/進度條 */}
+              <div className={`lg:col-span-3 bg-gradient-to-br from-indigo-800 to-indigo-950 rounded-2xl p-6 text-white shadow-lg relative overflow-hidden`}>
+                <div className="relative z-10">
+                  <div className="flex justify-between items-start mb-2">
+                    <span className="opacity-80 text-sm font-medium uppercase tracking-wider">實際淨資產 (總資產 - 總負債)</span>
+                    <Icon name="Wallet" size={24} className="opacity-80" />
+                  </div>
+                  <div className="text-4xl md:text-5xl font-black mb-1 text-emerald-400 drop-shadow-md">
+                    {displayValue(totals.grandTotal)}
+                  </div>
+                  <div className="text-sm opacity-80 flex flex-wrap gap-4 mt-2">
+                    <span>總資產: {displayValue(totals.totalAssets)}</span>
+                    <span className="text-red-300">總負債: -{displayValue(totals.liabilityTotal)}</span>
+                  </div>
 
-            {/* Main Stats */}
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
-              <div className="bg-gradient-to-br from-indigo-800 to-indigo-900 rounded-2xl p-5 text-white shadow-lg md:col-span-2">
-                <div className="flex justify-between items-start mb-2">
-                  <span className="opacity-80 text-sm font-medium uppercase tracking-wider">實際淨資產 (總資產 - 總負債)</span>
-                  <Icon name="Wallet" size={20} className="opacity-80" />
-                </div>
-                <div className="text-3xl font-black mb-1 text-emerald-400">
-                  {formatCurrency(totals.grandTotal)}
-                </div>
-                <div className="text-xs opacity-60 flex justify-between">
-                  <span>總資產: {formatCurrency(totals.totalAssets)}</span>
-                  <span className="text-red-300">總負債: {formatCurrency(totals.liabilityTotal)}</span>
+                  {/* 資產配置條 */}
+                  <div className="mt-6">
+                    <div className="text-xs opacity-70 mb-2 font-medium tracking-wide">資產配置比例</div>
+                    <div className="flex h-3 rounded-full overflow-hidden bg-indigo-900/50 w-full mb-3">
+                      <div style={{ width: `${totals.alloc.bank}%` }} className="bg-blue-400 transition-all duration-500" title={`銀行現金: ${totals.alloc.bank.toFixed(1)}%`}></div>
+                      <div style={{ width: `${totals.alloc.stock}%` }} className="bg-purple-400 transition-all duration-500" title={`投資部位: ${totals.alloc.stock.toFixed(1)}%`}></div>
+                      <div style={{ width: `${totals.alloc.vehicle}%` }} className="bg-orange-400 transition-all duration-500" title={`車輛資產: ${totals.alloc.vehicle.toFixed(1)}%`}></div>
+                    </div>
+                    <div className="flex gap-4 text-[10px] font-bold opacity-80">
+                      <div className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-blue-400"></span>現金 {totals.alloc.bank.toFixed(1)}%</div>
+                      <div className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-purple-400"></span>投資 {totals.alloc.stock.toFixed(1)}%</div>
+                      <div className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-orange-400"></span>車輛 {totals.alloc.vehicle.toFixed(1)}%</div>
+                    </div>
+                  </div>
                 </div>
               </div>
 
-              <div className={`${theme.card} rounded-2xl p-5 shadow-sm border`}>
-                <div className="flex justify-between items-start mb-2 text-slate-500">
-                  <span className="text-sm font-medium">可動用資金</span>
-                  <Icon name="CircleDollarSign" size={20} className="text-emerald-500" />
+              {/* 財務目標進度 */}
+              <div className={`lg:col-span-2 ${theme.card} rounded-2xl p-6 shadow-sm border flex flex-col justify-center`}>
+                <div className="flex justify-between items-start mb-4">
+                  <div className="flex items-center gap-2">
+                    <Icon name="Target" size={20} className="text-pink-500" />
+                    <span className="font-bold">財務目標</span>
+                  </div>
+                  <div className="flex items-center gap-1 text-xs">
+                     <span className={theme.textMuted}>目標 $</span>
+                     <input 
+                       type="text" 
+                       value={financialGoal} 
+                       onChange={(e) => setFinancialGoal(e.target.value)}
+                       onBlur={(e) => setFinancialGoal(getNum(e.target.value) || 1)}
+                       className={`w-20 ${theme.inputBg} rounded px-1 text-right font-bold outline-none`}
+                     />
+                  </div>
                 </div>
-                <div className="text-2xl font-black mb-2">{formatCurrency(totals.controllableAmount)}</div>
-                <input 
-                  type="range" min="0" max="100" value={100 - getNum(reservePercent)} onChange={(e) => setReservePercent(100 - e.target.value)}
-                  className="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-emerald-500"
-                />
-              </div>
-
-              <div className={`${theme.card} rounded-2xl p-5 shadow-sm border border-l-4 border-l-amber-500`}>
-                <div className="flex justify-between items-start mb-2 text-slate-500">
-                  <span className="text-sm font-medium">預備金 ({getNum(reservePercent)}%)</span>
-                  <Icon name="ShieldCheck" size={20} className="text-amber-500" />
+                
+                <div className="text-3xl font-black mb-2">
+                  {Math.min(100, Math.max(0, (totals.grandTotal / getNum(financialGoal)) * 100)).toFixed(1)}%
                 </div>
-                <div className="text-2xl font-black">{formatCurrency(totals.reserveAmount)}</div>
-                <div className={`text-[10px] ${theme.textMuted} mt-1`}>系統自動鎖定緩衝資金</div>
+                
+                <div className="w-full bg-slate-100 dark:bg-slate-700 h-4 rounded-full overflow-hidden mb-2 shadow-inner">
+                  <div 
+                    className="bg-gradient-to-r from-pink-500 to-rose-400 h-full transition-all duration-1000 ease-out"
+                    style={{ width: `${Math.min(100, Math.max(0, (totals.grandTotal / getNum(financialGoal)) * 100))}%` }}
+                  ></div>
+                </div>
+                
+                <div className={`text-xs ${theme.textMuted}`}>
+                  距離目標還差 <span className="font-bold text-pink-500">{displayValue(Math.max(0, getNum(financialGoal) - totals.grandTotal))}</span>
+                </div>
               </div>
             </div>
 
@@ -486,33 +558,35 @@
               
               {/* 負債區塊 */}
               <section className={`${theme.card} rounded-2xl border shadow-sm overflow-hidden`}>
-                <div 
-                  className={`p-4 flex justify-between items-center cursor-pointer ${theme.hover}`}
-                  onClick={() => toggleSection('liabilities')}
-                >
+                <div className={`p-4 flex justify-between items-center cursor-pointer ${theme.hover}`} onClick={() => toggleSection('liabilities')}>
                   <h2 className="text-lg font-bold flex items-center gap-2 text-red-500">
                     <Icon name="CreditCard" size={20} /> 負債與應付款
                   </h2>
                   <div className="flex items-center gap-3">
-                    <span className="text-sm font-bold text-red-500">-{formatCurrency(totals.liabilityTotal)}</span>
+                    <span className="text-sm font-bold text-red-500">-{displayValue(totals.liabilityTotal)}</span>
+                    <button onClick={(e) => { e.stopPropagation(); handleAddAsset('liabilities', '新負債'); }} className="p-1 hover:bg-slate-200 dark:hover:bg-slate-600 rounded text-slate-400"><Icon name="Plus" size={14}/></button>
                     {sectionsCollapsed.liabilities ? <Icon name="ChevronDown" size={18}/> : <Icon name="ChevronUp" size={18}/>}
                   </div>
                 </div>
                 {!sectionsCollapsed.liabilities && (
-                  <div className="p-4 pt-0">
+                  <div className="p-4 pt-0 max-h-[250px] overflow-y-auto">
                     <table className="w-full text-left">
                       <tbody className={`divide-y ${theme.border}`}>
                         {liabilities.map(item => (
-                          <tr key={item.id} className="group">
-                            <td className="py-2"><span className="text-sm font-medium">{item.name}</span></td>
-                            <td className="py-2 text-right text-red-500 font-mono text-sm">
+                          <tr key={item.id} className="group relative">
+                            <td className="py-2">
+                              <input type="text" value={item.name} onChange={(e) => handleDataChange('liabilities', item.id, 'name', e.target.value)} className={`w-full min-w-[100px] text-sm font-medium ${theme.input} bg-transparent border-none outline-none`} />
+                            </td>
+                            <td className="py-2 text-right text-red-500 font-mono text-sm whitespace-nowrap">
                               -<input 
-                                type="text" 
-                                value={item.amount ?? ''} 
+                                type="text" value={item.amount ?? ''} 
                                 onChange={(e) => handleDataChange('liabilities', item.id, 'amount', e.target.value)}
                                 onBlur={(e) => handleBlurEval('liabilities', item.id, 'amount', e.target.value)}
-                                className={`w-28 text-right ${theme.input} border-none rounded px-1 outline-none`} 
+                                className={`w-24 text-right ${theme.input} border-none rounded px-1 outline-none ${isPrivacyMode ? 'privacy-blur' : ''}`} 
                               />
+                            </td>
+                            <td className="w-6 text-center">
+                              <button onClick={() => handleRemoveAsset('liabilities', item.id)} className="text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"><Icon name="Trash2" size={14}/></button>
                             </td>
                           </tr>
                         ))}
@@ -529,7 +603,8 @@
                     <Icon name="Banknote" size={20} /> 銀行與現金
                   </h2>
                   <div className="flex items-center gap-3">
-                    <span className="text-sm font-bold text-blue-500">{formatCurrency(totals.bankTotal)}</span>
+                    <span className="text-sm font-bold text-blue-500">{displayValue(totals.bankTotal)}</span>
+                    <button onClick={(e) => { e.stopPropagation(); handleAddAsset('banks', '新帳戶'); }} className="p-1 hover:bg-slate-200 dark:hover:bg-slate-600 rounded text-slate-400"><Icon name="Plus" size={14}/></button>
                     {sectionsCollapsed.banks ? <Icon name="ChevronDown" size={18}/> : <Icon name="ChevronUp" size={18}/>}
                   </div>
                 </div>
@@ -538,16 +613,23 @@
                     <table className="w-full text-left">
                       <tbody className={`divide-y ${theme.border}`}>
                         {assets.banks.map(item => (
-                          <tr key={item.id} className="group">
-                            <td className="py-2 text-sm font-medium">{item.name}</td>
-                            <td className="py-2 text-right font-mono text-sm">
+                          <tr key={item.id} className="group relative">
+                            <td className="py-2">
+                              {item.id === 'cash_hand' ? 
+                                <span className="text-sm font-medium px-2">{item.name}</span> :
+                                <input type="text" value={item.name} onChange={(e) => handleDataChange('banks', item.id, 'name', e.target.value)} className={`w-full min-w-[100px] text-sm font-medium ${theme.input} bg-transparent border-none outline-none`} />
+                              }
+                            </td>
+                            <td className="py-2 text-right font-mono text-sm whitespace-nowrap">
                               <input 
-                                type="text" 
-                                value={item.amount ?? ''} 
+                                type="text" value={item.amount ?? ''} 
                                 onChange={(e) => handleDataChange('banks', item.id, 'amount', e.target.value)} 
                                 onBlur={(e) => handleBlurEval('banks', item.id, 'amount', e.target.value)}
-                                className={`w-28 text-right ${theme.input} border-none rounded px-1 outline-none`} 
+                                className={`w-28 text-right ${theme.input} border-none rounded px-1 outline-none ${isPrivacyMode ? 'privacy-blur' : ''}`} 
                               />
+                            </td>
+                            <td className="w-6 text-center">
+                              {item.id !== 'cash_hand' && <button onClick={() => handleRemoveAsset('banks', item.id)} className="text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"><Icon name="Trash2" size={14}/></button>}
                             </td>
                           </tr>
                         ))}
@@ -564,27 +646,34 @@
                     <Icon name="TrendingUp" size={20} /> 股票與外幣部位
                   </h2>
                   <div className="flex items-center gap-3">
-                    <span className="text-sm font-bold text-purple-500">{formatCurrency(totals.stockTotal)}</span>
+                    <span className="text-sm font-bold text-purple-500">{displayValue(totals.stockTotal)}</span>
                     {sectionsCollapsed.stocks ? <Icon name="ChevronDown" size={18}/> : <Icon name="ChevronUp" size={18}/>}
                   </div>
                 </div>
                 {!sectionsCollapsed.stocks && (
                   <div className="p-4 pt-0 grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div>
-                      <div className={`text-xs font-bold mb-2 ${theme.textMuted} uppercase`}>台股部位</div>
+                      <div className={`flex justify-between items-center mb-2`}>
+                        <span className={`text-xs font-bold ${theme.textMuted} uppercase`}>台股部位</span>
+                        <button onClick={() => handleAddAsset('stocks', '新台股')} className="text-xs text-indigo-500 hover:underline">+ 新增</button>
+                      </div>
                       <table className="w-full text-left">
                         <tbody className={`divide-y ${theme.border}`}>
                           {assets.stocks.map(item => (
                             <tr key={item.id} className="group">
-                              <td className="py-2 text-sm font-medium">{item.name}</td>
-                              <td className="py-2 text-right">
+                              <td className="py-2">
+                                <input type="text" value={item.name} onChange={(e) => handleDataChange('stocks', item.id, 'name', e.target.value)} className={`w-full min-w-[100px] text-sm font-medium ${theme.input} bg-transparent border-none outline-none`} />
+                              </td>
+                              <td className="py-2 text-right whitespace-nowrap">
                                 <input 
-                                  type="text" 
-                                  value={item.amount ?? ''} 
+                                  type="text" value={item.amount ?? ''} 
                                   onChange={(e) => handleDataChange('stocks', item.id, 'amount', e.target.value)} 
                                   onBlur={(e) => handleBlurEval('stocks', item.id, 'amount', e.target.value)}
-                                  className={`w-28 text-right font-mono text-sm ${theme.input} border-none rounded px-1 outline-none`} 
+                                  className={`w-28 text-right font-mono text-sm ${theme.input} border-none rounded px-1 outline-none ${isPrivacyMode ? 'privacy-blur' : ''}`} 
                                 />
+                              </td>
+                              <td className="w-6 text-center">
+                                {item.id !== 'pending_settlement' && <button onClick={() => handleRemoveAsset('stocks', item.id)} className="text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"><Icon name="Trash2" size={14}/></button>}
                               </td>
                             </tr>
                           ))}
@@ -592,21 +681,28 @@
                       </table>
                     </div>
                     <div>
-                       <div className={`text-xs font-bold mb-2 ${theme.textMuted} uppercase`}>美股/外幣</div>
+                       <div className={`flex justify-between items-center mb-2`}>
+                        <span className={`text-xs font-bold ${theme.textMuted} uppercase`}>美股/外幣</span>
+                        <button onClick={() => handleAddAsset('foreign', '新外幣')} className="text-xs text-indigo-500 hover:underline">+ 新增</button>
+                      </div>
                        <table className="w-full text-left">
                         <tbody className={`divide-y ${theme.border}`}>
                           {assets.foreign.map(item => (
-                            <tr key={item.id}>
-                              <td className="py-2 text-sm">{item.name}</td>
-                              <td className="py-2 text-right">
+                            <tr key={item.id} className="group">
+                              <td className="py-2">
+                                <input type="text" value={item.name} onChange={(e) => handleDataChange('foreign', item.id, 'name', e.target.value)} className={`w-full min-w-[100px] text-sm font-medium ${theme.input} bg-transparent border-none outline-none`} />
+                              </td>
+                              <td className="py-2 text-right whitespace-nowrap">
                                 <input 
-                                  type="text" 
-                                  value={item.amount ?? ''} 
+                                  type="text" value={item.amount ?? ''} 
                                   onChange={(e) => handleDataChange('foreign', item.id, 'amount', e.target.value)} 
                                   onBlur={(e) => handleBlurEval('foreign', item.id, 'amount', e.target.value)}
-                                  className={`w-24 text-right font-mono text-sm ${theme.input} border-none rounded px-1 outline-none`} 
+                                  className={`w-20 text-right font-mono text-sm ${theme.input} border-none rounded px-1 outline-none ${isPrivacyMode ? 'privacy-blur' : ''}`} 
                                 />
                                 <span className="text-sm ml-1">USD</span>
+                              </td>
+                              <td className="w-6 text-center">
+                                <button onClick={() => handleRemoveAsset('foreign', item.id)} className="text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"><Icon name="Trash2" size={14}/></button>
                               </td>
                             </tr>
                           ))}
@@ -624,21 +720,22 @@
                     <Icon name="Bike" size={20} /> 名下車輛 ({assets.vehicles.length}輛)
                   </h2>
                   <div className="flex items-center gap-3">
-                    <span className="text-sm font-bold text-orange-500">{formatCurrency(totals.vehicleTotal)}</span>
+                    <span className="text-sm font-bold text-orange-500">{displayValue(totals.vehicleTotal)}</span>
+                    <button onClick={(e) => { e.stopPropagation(); handleAddAsset('vehicles', '新愛車'); }} className="p-1 hover:bg-slate-200 dark:hover:bg-slate-600 rounded text-slate-400"><Icon name="Plus" size={14}/></button>
                     {sectionsCollapsed.vehicles ? <Icon name="ChevronDown" size={18}/> : <Icon name="ChevronUp" size={18}/>}
                   </div>
                 </div>
                 {!sectionsCollapsed.vehicles && (
                   <div className="p-4 pt-0 grid grid-cols-2 md:grid-cols-4 gap-4">
                       {assets.vehicles.map(item => (
-                        <div key={item.id} className={`${theme.inputBg} p-3 rounded-lg text-center`}>
-                           <div className="text-sm font-bold mb-1 truncate">{item.name}</div>
+                        <div key={item.id} className={`${theme.inputBg} p-3 rounded-lg text-center relative group`}>
+                           <button onClick={() => handleRemoveAsset('vehicles', item.id)} className="absolute top-1 right-1 text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"><Icon name="Trash2" size={12}/></button>
+                           <input type="text" value={item.name} onChange={(e) => handleDataChange('vehicles', item.id, 'name', e.target.value)} className={`text-sm font-bold mb-1 w-full text-center bg-transparent border-none p-0 outline-none ${theme.text}`} />
                            <input 
-                             type="text" 
-                             value={item.amount ?? ''} 
+                             type="text" value={item.amount ?? ''} 
                              onChange={(e) => handleDataChange('vehicles', item.id, 'amount', e.target.value)} 
                              onBlur={(e) => handleBlurEval('vehicles', item.id, 'amount', e.target.value)}
-                             className={`w-full text-center text-orange-500 font-bold bg-transparent border-none p-0 focus:ring-0 outline-none`} 
+                             className={`w-full text-center text-orange-500 font-bold bg-transparent border-none p-0 focus:ring-0 outline-none ${isPrivacyMode ? 'privacy-blur' : ''}`} 
                            />
                         </div>
                       ))}
@@ -653,14 +750,11 @@
                 <div className="flex items-center gap-3">
                   <Icon name="ClipboardCheck" className="text-indigo-500" size={24} />
                   <div>
-                    <h3 className="font-bold">近六個月固定支出核銷</h3>
-                    <p className={`text-xs ${theme.textMuted}`}>可自由新增與編輯支出項目名稱、週期與金額。</p>
+                    <h3 className="font-bold">固定支出核銷 (自動連動扣款)</h3>
+                    <p className={`text-xs ${theme.textMuted}`}>勾選未繳項目時，將提示您是否直接從現金餘額中扣除。</p>
                   </div>
                 </div>
-                <button 
-                  onClick={handleAddExpense}
-                  className="flex items-center gap-1 bg-indigo-50 text-indigo-600 px-3 py-1.5 rounded-lg text-sm font-bold hover:bg-indigo-100 transition-colors shrink-0"
-                >
+                <button onClick={handleAddExpense} className="flex items-center gap-1 bg-indigo-50 text-indigo-600 px-3 py-1.5 rounded-lg text-sm font-bold hover:bg-indigo-100 transition-colors shrink-0">
                   <Icon name="Plus" size={16} /> 新增項目
                 </button>
               </div>
@@ -684,18 +778,14 @@
                       <tr key={expense.id} className={`group transition-colors ${theme.hover}`}>
                         <td className="px-3 py-2">
                           <input
-                            type="text"
-                            value={expense.name}
-                            onChange={(e) => handleExpenseChange(expense.id, 'name', e.target.value)}
+                            type="text" value={expense.name} onChange={(e) => handleExpenseChange(expense.id, 'name', e.target.value)}
                             className={`w-full min-w-[120px] ${theme.input} border-none rounded px-2 py-1 text-sm font-bold outline-none`}
                             placeholder="項目名稱"
                           />
                         </td>
                         <td className="px-3 py-2 text-xs">
                           <input
-                            type="text"
-                            value={expense.note}
-                            onChange={(e) => handleExpenseChange(expense.id, 'note', e.target.value)}
+                            type="text" value={expense.note} onChange={(e) => handleExpenseChange(expense.id, 'note', e.target.value)}
                             className={`w-16 ${theme.inputBg} border-none rounded px-2 py-1 text-xs focus:ring-1 focus:ring-indigo-300 text-center ${theme.text} outline-none`}
                             placeholder="每月"
                           />
@@ -704,11 +794,10 @@
                           <div className="flex items-center gap-1">
                             <span className={theme.textMuted}>$</span>
                             <input
-                              type="text"
-                              value={expense.amount ?? ''}
+                              type="text" value={expense.amount ?? ''}
                               onChange={(e) => handleExpenseChange(expense.id, 'amount', e.target.value)}
                               onBlur={(e) => handleExpenseBlur(expense.id, 'amount', e.target.value)}
-                              className={`w-24 ${theme.input} border-none rounded px-1 py-1 text-sm font-mono font-medium outline-none`}
+                              className={`w-24 ${theme.input} border-none rounded px-1 py-1 text-sm font-mono font-medium outline-none ${isPrivacyMode ? 'privacy-blur' : ''}`}
                             />
                           </div>
                         </td>
@@ -717,20 +806,14 @@
                           return (
                             <td key={m.id} className="px-2 py-2 text-center">
                               <input
-                                type="checkbox"
-                                checked={!!isChecked}
-                                onChange={() => togglePaid(expense.id, m.id)}
+                                type="checkbox" checked={!!isChecked} onChange={() => togglePaid(expense.id, m.id)}
                                 className="w-5 h-5 rounded border-slate-300 text-indigo-500 focus:ring-indigo-500 cursor-pointer transition-all"
                               />
                             </td>
                           );
                         })}
                         <td className="px-2 py-2 text-center">
-                          <button 
-                            onClick={() => handleRemoveExpense(expense.id)}
-                            className="p-1.5 text-slate-300 hover:text-red-500 hover:bg-red-50/10 rounded transition-colors opacity-0 group-hover:opacity-100"
-                            title="刪除此項目"
-                          >
+                          <button onClick={() => handleRemoveExpense(expense.id)} className="p-1.5 text-slate-300 hover:text-red-500 hover:bg-red-50/10 rounded transition-colors opacity-0 group-hover:opacity-100">
                             <Icon name="Trash2" size={16} />
                           </button>
                         </td>
@@ -742,7 +825,7 @@
             </div>
 
             <footer className={`pt-6 border-t ${theme.border} text-center ${theme.textMuted} text-xs`}>
-              本記帳本已啟用雲端自動儲存機制。所有金額輸入框皆支援直接輸入算式進行加減乘除。
+              本記帳本已啟用雲端自動儲存。隱私模式下點擊數字即可查看編輯。
             </footer>
           </div>
         </div>
